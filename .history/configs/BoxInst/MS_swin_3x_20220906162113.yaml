@@ -1,0 +1,36 @@
+_BASE_: "Base-BoxInst.yaml"
+MODEL:
+  WEIGHTS: "./swin_base_patch4_window12_384_22k.pkl"
+  RESNETS:
+    OUT_FEATURES: ["res3", "res4", "res5"]
+  FPN:
+    IN_FEATURES: ["res3", "res4", "res5"]
+  SWIN_ENABLE: True
+  SWIN:
+    EMBED_DIM: 128
+    DEPTHS: [2, 2, 18, 2]
+    NUM_HEADS: [4, 8, 16, 32]
+    WINDOW_SIZE: 12
+    APE: False
+    DROP_PATH_RATE: 0.3
+    PATCH_NORM: True
+    PRETRAIN_IMG_SIZE: 384
+  BOXINST:
+    SEM_IN_CHANNELS: 256
+SOLVER:
+  STEPS: (210000, 250000)
+  MAX_ITER: 270000
+  BASE_LR: 0.0001
+  WARMUP_FACTOR: 1.0
+  WARMUP_ITERS: 10
+  WEIGHT_DECAY: 0.05
+  OPTIMIZER: "ADAMW"
+  BACKBONE_MULTIPLIER: 0.1
+  CLIP_GRADIENTS:
+    ENABLED: True
+    CLIP_TYPE: "full_model"
+    CLIP_VALUE: 0.01
+    NORM_TYPE: 2.0
+  AMP:
+    ENABLED: True
+OUTPUT_DIR: "output/boxinst_swin_B_3x"

@@ -1,0 +1,9 @@
+_BASE_: "Base-BoxInst.yaml"
+MODEL:
+  WEIGHTS: "detectron2://ImageNetPretrained/MSRA/R-50.pkl"
+  RESNETS:
+    DEPTH: 101
+DATASETS:
+  TRAIN: ('voc_2012_train',)
+  TEST: ('voc_2012_val',)
+OUTPUT_DIR: "output/S2I_VOC_MS_R_101_1x"

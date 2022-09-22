@@ -1,0 +1,12 @@
+_BASE_: "Base-BoxInst.yaml"
+MODEL:
+  WEIGHTS: "./swin_base_patch4_window7_224.pth"
+  RESNETS:
+    OUT_FEATURES: ["p1", "p2", "p3"]
+  FPN:
+    IN_FEATURES: ["p1", "p2", "p3"]
+  SWIN: True
+SOLVER:
+  STEPS: (60000, 80000)
+  MAX_ITER: 90000
+OUTPUT_DIR: "output/boxinst_swin_B_1x"
