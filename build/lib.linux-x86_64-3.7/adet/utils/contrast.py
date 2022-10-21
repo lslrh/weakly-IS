@@ -13,8 +13,4 @@ def momentum_update(old_value, new_value, momentum, debug=False):
 
 
 def l2_normalize(x):
-    x = F.interpolate(
-                x,
-                scale_factor=2,
-                mode="bilinear", align_corners=False)
     return F.normalize(x, p=2, dim=1)

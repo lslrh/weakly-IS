@@ -21,8 +21,13 @@ adet/config/config.py
 adet/config/defaults.py
 adet/data/__init__.py
 adet/data/augmentation.py
+adet/data/build.py
+adet/data/build_voc.py
 adet/data/builtin.py
+adet/data/coco.py
+adet/data/common.py
 adet/data/dataset_mapper.py
+adet/data/dataset_strong_weak_aug_mapper.py
 adet/data/detection_utils.py
 adet/data/fcpose_dataset_mapper.py
 adet/evaluation/__init__.py
@@ -60,6 +65,7 @@ adet/modeling/backbone/lpf.py
 adet/modeling/backbone/mobilenet.py
 adet/modeling/backbone/resnet_interval.py
 adet/modeling/backbone/resnet_lpf.py
+adet/modeling/backbone/swin.py
 adet/modeling/backbone/vovnet.py
 adet/modeling/batext/__init__.py
 adet/modeling/batext/batext.py
@@ -70,6 +76,7 @@ adet/modeling/blendmask/blender.py
 adet/modeling/blendmask/blendmask.py
 adet/modeling/condinst/__init__.py
 adet/modeling/condinst/condinst.py
+adet/modeling/condinst/copypaste.py
 adet/modeling/condinst/dynamic_mask_head.py
 adet/modeling/condinst/mask_branch.py
 adet/modeling/fcos/__init__.py
