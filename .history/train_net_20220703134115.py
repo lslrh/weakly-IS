@@ -8,7 +8,7 @@ import copy
 import itertools
 import logging
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "8,9"
+
 from collections import OrderedDict
 from typing import Any, Dict, List, Set
 

@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from kornia import color
 from detectron2.structures import ImageList
 from ..utils import viz
-import pdb
+
 
 def compute_project_term(mask_scores, gt_bitmasks, mode='max'):
     if mode == 'max':
@@ -194,7 +194,7 @@ class BoxInstLoss(nn.Module):
                     "loss_pairwise": dummy_loss.item()}
 
         mask_scores = mask_logits.sigmoid()
-
+        pdb.set_trace()
         loss_prj_term_max = compute_project_term(mask_scores, gt_bitmasks, mode='max')
         # loss_prj_term_avg = compute_project_term(mask_scores, gt_bitmasks, mode='avg')
         pairwise_losses = compute_pairwise_term(mask_logits, self.pairwise_size, self.pairwise_dilation)

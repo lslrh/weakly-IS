@@ -328,12 +328,12 @@ class SetCriterion(nn.Module):
     
     def mask_focal_loss(self, x, targets, weights=None, alpha: float = 0.25, gamma: float = 2):
         ce_loss = F.binary_cross_entropy_with_logits(x, targets, weight=weights, reduction="none")
-        # p_t = x * targets + (1 - x) * (1 - targets)
-        # loss = ce_loss * ((1 - p_t) ** gamma)
-        # if alpha >= 0:
-        #     alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
-        #     loss = alpha_t * loss
-        return ce_loss.sum()/(weights.sum()+1)
+        p_t = x * targets + (1 - x) * (1 - targets)
+        loss = ce_loss * ((1 - p_t) ** gamma)
+        if alpha >= 0:
+            alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+            loss = alpha_t * loss
+        return loss.sum()/(weights.sum()+1)
 
     # def contrast_loss(self, weak_logits, strong_logits):
     #     """ the consistence loss ensures weak and strong data augmentation has the same outputs"""
@@ -446,8 +446,7 @@ class SetCriterion(nn.Module):
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
                 indices = self.matcher(aux_outputs, targets)
-                aux_outputs_ema = outputs_ema["aux_outputs"][i]
-                losses[f'loss_pseudo_{i}'] = self.loss_pseudo(aux_outputs, aux_outputs_ema, indices, num_masks, gt_instances=gt_instances)
+                losses
                 for loss in self.losses:
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_masks, gt_instances=gt_instances)
                     l_dict = {k + f"_{i}": v for k, v in l_dict.items()}

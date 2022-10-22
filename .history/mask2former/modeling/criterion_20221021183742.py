@@ -3,7 +3,6 @@
 """
 MaskFormer criterion.
 """
-from multiprocessing import dummy
 import cv2
 from collections import defaultdict
 import torch
@@ -19,7 +18,7 @@ from detectron2.projects.point_rend.point_features import (
 from mask2former.utils.misc import is_dist_avail_and_initialized, nested_tensor_from_tensor_list
 from mask2former.utils import box_ops
 from mask2former.modeling.boxinst_loss import BoxInstLoss
-import pdb
+
 
 def flat_gt_ids(tgt_indices):
     new_tgt_indices = []
@@ -140,7 +139,7 @@ class SetCriterion(nn.Module):
         if self.boxinst_enabled:
             self.boxinst_loss = BoxInstLoss(cfg)
 
-        self._iter = 0
+        self.register_buffer("_iter", torch.zeros([1]))
         self._warmup_iters = 10000
 
         # weak and strong augmentation setting
@@ -155,7 +154,6 @@ class SetCriterion(nn.Module):
                                     'min_thresh': cfg.MODEL.CONSISTENCY.MINING.MIN_THRESH,
                                     'max_thresh': cfg.MODEL.CONSISTENCY.MINING.MAX_THRESH}
                                 }
-        self.max_iters = cfg.SOLVER.MAX_ITER 
 
     def loss_labels(self, outputs, targets, indices, num_masks, **kwargs):
         """Classification loss (NLL)
@@ -237,8 +235,6 @@ class SetCriterion(nn.Module):
 
             image_color_similarity = torch.cat([x.image_color_similarity for x in new_gt_instances])
             image_color_similarity = image_color_similarity[gt_inds]
-
-
             losses = self.boxinst_loss(src_masks, gt_bitmasks, image_color_similarity)
             return losses
 
@@ -278,96 +274,80 @@ class SetCriterion(nn.Module):
         del target_masks
         return losses
 
-    def loss_pseudo(self, outputs, outputs_ema, indices, num_masks, **kwargs):
-        """Compute the losses related to the masks:
-           (1) the focal loss and the dice loss for fully supervised;
-           (2) or the projection loss and pairwise affinity mask loss for weakly supervised loss.
-         targets dicts must contain the key "masks" containing a tensor of dim [nb_target_boxes, h, w]
+    def contrast_loss(self, weak_logits, strong_logits):
+        """ the consistence loss ensures weak and strong data augmentation has the same outputs"""
+        weak_logits = weak_logits.detach()
+        min_thresh = self.consistency_cfg['mining']['min_thresh']
+        max_thresh = self.consistency_cfg['mining']['max_thresh']
+        pseudo_score = torch.sigmoid(weak_logits)
+
+        if self.consistency_cfg['mining']['enabled']:
+            bg = pseudo_score < min_thresh
+            fg = pseudo_score > max_thresh
+            m = bg | fg
+        else:
+            m = torch.ones_like(weak_logits)
+
+        # compute pseudo label
+        psuedo_label = pseudo_score.clone()
+        if self.consistency_cfg['label_type'] == 'hard':
+            psuedo_label[fg] = torch.tensor([1], dtype=psuedo_label.dtype, device=psuedo_label.device)
+            psuedo_label[bg] = torch.tensor([0], dtype=psuedo_label.dtype, device=psuedo_label.device)
+
+        # compute certainty loss
+        if self.consistency_cfg['loss_type'] == 'ce':
+            loss = F.binary_cross_entropy_with_logits(strong_logits, psuedo_label, reduction="none")
+        elif self.consistency_cfg['loss_type'] == 'l1_smooth':
+            loss = F.smooth_l1_loss(torch.sigmoid(strong_logits), torch.sigmoid(weak_logits), reduction="none")
+        else:
+            raise NotImplementedError
+        loss = (m * loss).sum() / len(torch.nonzero(m)) if len(torch.nonzero(m)) else (m * loss).mean()
+
+        # TODO: compute uncertainty loss
+        return loss
+
+    def loss_consistency(self, weak_logits, weak_status, strong_logits, strong_status, input_shape):
+        """the consistence loss ensures weak and strong data augmentation has the same outputs
+
+        Args:
+            weak_logits (tensor):  output logits of weak augmentation branch
+            weak_status (dict): dict contains several setting
+            strong_logits (tensor): output logits of weak augmentation branch
+            strong_status (dict):  dict contains several setting
+            input_shape (size): spatial size of input tensor of networks
+
+        Returns:
+            loss
         """
-        gt_instances = kwargs['gt_instances']
-        assert "pred_masks" in outputs
-        src_idx = self._get_src_permutation_idx(indices)
-        src_masks = outputs["pred_masks"]
-        src_masks = src_masks[src_idx]
-        mask_scores = src_masks.sigmoid()
+        def get_common_region(logits, status):
+            """get the common region of logits between weak branch and strong branch"""
+            outputs = []
+            for idx, s in enumerate(status):
+                h, w = s['img_size']
+                logit = logits[idx][:, :h, :w]
+                if s['status']['hflip']:
+                    logit = torch.flip(logit, dims=[2])
+                if s['status']['align_size'] is not None:
+                    h, w = s['status']['align_size']['h'], s['status']['align_size']['w']
+                    logit = F.upsample(logit.unsqueeze(0), (h, w))
+                x1, y1, x2, y2 = s['overlap_bbox']
+                logit = logit[:, :, y1:y2, x1:x2]
+                outputs.append(logit)
+            return outputs
 
-        # filter samples only with empty instances
-        new_gt_indices, new_gt_instances = [], []
-        for indice, gt_instance in zip(indices, gt_instances):
-            if not indice[1].numel():
-                continue
-            new_gt_indices.append(indice[1])
-            new_gt_instances.append(gt_instance)
+        weak_logits = weak_logits.detach()
 
-        gt_inds = flat_gt_ids(new_gt_indices)
+        # upsample to the shape of constructed batch tensor
+        weak_logits = F.upsample(weak_logits, input_shape[-2:])
+        strong_logits = F.upsample(strong_logits, input_shape[-2:])
 
-        # TODO: optimizing image with only backgroud
-        if len(gt_inds) == 0:
-            dummy_loss = src_masks.sum() * 0.
-            return dummy_loss
-        gt_bitmasks = torch.cat([per_im.gt_bitmasks for per_im in new_gt_instances])
-        gt_bitmasks = gt_bitmasks[gt_inds].unsqueeze(dim=1)
+        weak_logits = get_common_region(weak_logits, weak_status)
+        strong_logits = get_common_region(strong_logits, strong_status)
 
-        masks = (mask_scores.unsqueeze(1) > 0.7) * gt_bitmasks.float()
-
-        if self._iter >= 0:
-            n_pos = torch.sum(masks, dim=(2,3))
-            pseudo_scores = (mask_scores.unsqueeze(1) * gt_bitmasks).reshape(len(gt_inds), -1) 
-            pseudo_scores_rank = torch.sort(pseudo_scores, descending=True)[0]
-            n_pos = torch.clamp(n_pos, min=0, max=pseudo_scores_rank.shape[1]-1).long()
-            
-            assert n_pos.max() < pseudo_scores_rank.shape[1]
-            thr = torch.gather(pseudo_scores_rank, dim=1, index=n_pos)
-            thr = torch.clamp(thr, min=0.7, max=0.8)[:,None,None]
-            pseudo_seg_final = (mask_scores.unsqueeze(1) > thr) * gt_bitmasks.float()
-
-            warmup_factor_2 = min(self._iter / float(self.max_iters), 1)
-            weights = ((mask_scores.unsqueeze(1) > thr) | (mask_scores.unsqueeze(1) < 0.3)) * gt_bitmasks
-            loss_pseudo = (self.mask_focal_loss(mask_scores.unsqueeze(1), pseudo_seg_final.detach(), weights)) * warmup_factor_2
-        return loss_pseudo
-    
-    def mask_focal_loss(self, x, targets, weights=None, alpha: float = 0.25, gamma: float = 2):
-        ce_loss = F.binary_cross_entropy_with_logits(x, targets, weight=weights, reduction="none")
-        # p_t = x * targets + (1 - x) * (1 - targets)
-        # loss = ce_loss * ((1 - p_t) ** gamma)
-        # if alpha >= 0:
-        #     alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
-        #     loss = alpha_t * loss
-        return ce_loss.sum()/(weights.sum()+1)
-
-    # def contrast_loss(self, weak_logits, strong_logits):
-    #     """ the consistence loss ensures weak and strong data augmentation has the same outputs"""
-    #     weak_logits = weak_logits.detach()
-    #     min_thresh = self.consistency_cfg['mining']['min_thresh']
-    #     max_thresh = self.consistency_cfg['mining']['max_thresh']
-    #     pseudo_score = torch.sigmoid(weak_logits)
-
-    #     if self.consistency_cfg['mining']['enabled']:
-    #         bg = pseudo_score < min_thresh
-    #         fg = pseudo_score > max_thresh
-    #         m = bg | fg
-    #     else:
-    #         m = torch.ones_like(weak_logits)
-
-    #     # compute pseudo label
-    #     psuedo_label = pseudo_score.clone()
-    #     if self.consistency_cfg['label_type'] == 'hard':
-    #         psuedo_label[fg] = torch.tensor([1], dtype=psuedo_label.dtype, device=psuedo_label.device)
-    #         psuedo_label[bg] = torch.tensor([0], dtype=psuedo_label.dtype, device=psuedo_label.device)
-
-    #     # compute certainty loss
-    #     if self.consistency_cfg['loss_type'] == 'ce':
-    #         loss = F.binary_cross_entropy_with_logits(strong_logits, psuedo_label, reduction="none")
-    #     elif self.consistency_cfg['loss_type'] == 'l1_smooth':
-    #         loss = F.smooth_l1_loss(torch.sigmoid(strong_logits), torch.sigmoid(weak_logits), reduction="none")
-    #     else:
-    #         raise NotImplementedError
-    #     loss = (m * loss).sum() / len(torch.nonzero(m)) if len(torch.nonzero(m)) else (m * loss).mean()
-
-    #     # TODO: compute uncertainty loss
-    #     return loss
-
-  
+        losses = [self.contrast_loss(weak_logit, strong_logit).view(1)
+                  for weak_logit, strong_logit in zip(weak_logits, strong_logits)]
+        losses = torch.cat(losses).sum() / len(losses)
+        return losses
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
@@ -413,7 +393,7 @@ class SetCriterion(nn.Module):
         strong_items = get_items_by_index(strong_ids)
         return weak_items, strong_items
 
-    def compute_losses(self, outputs, outputs_ema, targets, batched_inputs):
+    def compute_losses(self, outputs, targets, batched_inputs):
         """This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -440,41 +420,78 @@ class SetCriterion(nn.Module):
         losses = {}
         for loss in self.losses:
             losses.update(self.get_loss(loss, outputs, targets, indices, num_masks, gt_instances=gt_instances))
-        
-        losses['loss_pseudo'] = self.loss_pseudo(outputs, outputs_ema, indices, num_masks, gt_instances=gt_instances) 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
                 indices = self.matcher(aux_outputs, targets)
-                aux_outputs_ema = outputs_ema["aux_outputs"][i]
-                losses[f'loss_pseudo_{i}'] = self.loss_pseudo(aux_outputs, aux_outputs_ema, indices, num_masks, gt_instances=gt_instances)
                 for loss in self.losses:
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_masks, gt_instances=gt_instances)
                     l_dict = {k + f"_{i}": v for k, v in l_dict.items()}
                     losses.update(l_dict)
         return losses
 
-    def forward(self, outputs, outputs_ema, targets, batched_inputs, input_shape):
+    def forward(self, outputs, targets, batched_inputs, input_shape):
         assert len(targets) % 2 == 0
         assert outputs['pred_logits'].shape[0] % 2 == 0
-        self._iter += 1
+
         # pop ``masks`` for weakly supervised learning and get mask by bboxes
         if self.boxinst_enabled:
             for target in targets:
                 target.pop('masks')
             self.boxinst_loss.compute_pseudo_masks(batched_inputs)
-
-        # weak_items, strong_items = self.split_weak_strong(outputs, targets, batched_inputs)
+        pdb.set_trace()
+        weak_items, strong_items = self.split_weak_strong(outputs, targets, batched_inputs)
         assert self.weak_aug or self.strong_aug, "weak_aug | strong_aug is False."
 
-        losses = self.compute_losses(
-                outputs,
-                outputs_ema,
-                targets,
-                batched_inputs,
+        if self.weak_aug:
+            weak_losses = self.compute_losses(
+                weak_items['outputs'],
+                weak_items['targets'],
+                weak_items['batched_inputs']
             )
-        return losses
+        if self.strong_aug:
+            strong_losses = self.compute_losses(
+                strong_items['outputs'],
+                strong_items['targets'],
+                strong_items['batched_inputs'],
+            )
 
+        if self.weak_aug and (not self.strong_aug):
+            return weak_losses
+        elif (not self.weak_aug) and self.strong_aug:
+            return strong_losses
+        else:
+            losses = dict()
+            for k in weak_losses.keys():
+                if ('prj' in k) and (not self.strong_with_proj_loss):
+                    losses[k] = weak_losses[k]
+                    continue
+                elif ('pairwise' in k) and (not self.strong_with_pair_loss):
+                    losses[k] = weak_losses[k]
+                    continue
+                else:
+                    losses[k] = (weak_losses[k] + strong_losses[k]) / 2.
+        if self.weight_dict['loss_consistency'] == 0:
+            return losses
+
+        # compute consistency loss
+        # weak_status = [{'overlap_bbox': input['overlap_bbox'],
+        #                 'status'      : input['status'],
+        #                 'img_size'    : input['image'].shape[-2:],
+        #                 } for input in weak_items['batched_inputs']]
+        # strong_status = [{'overlap_bbox': input['overlap_bbox'],
+        #                   'status'      : input['status'],
+        #                   'img_size'    : input['image'].shape[-2:],
+        #                   } for input in strong_items['batched_inputs']]
+        # losses['loss_consistency'] = self.loss_consistency(
+        #     weak_items['outputs']['pred_masks'], weak_status,
+        #     strong_items['outputs']['pred_masks'], strong_status, input_shape)
+        # if 'aux_outputs' in weak_items['outputs'] and 'aux_outputs' in strong_items['outputs']:
+        #     for i, (w, s) in enumerate(zip(weak_items['outputs']['aux_outputs'],
+        #                                    strong_items['outputs']['aux_outputs'])):
+        #         losses[f'loss_consistency_{i}'] = self.loss_consistency(
+        #             w['pred_masks'], weak_status, s['pred_masks'], strong_status, input_shape)
+        return losses
 
     def __repr__(self):
         head = "Criterion " + self.__class__.__name__

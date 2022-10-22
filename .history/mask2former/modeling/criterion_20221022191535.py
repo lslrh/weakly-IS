@@ -140,7 +140,7 @@ class SetCriterion(nn.Module):
         if self.boxinst_enabled:
             self.boxinst_loss = BoxInstLoss(cfg)
 
-        self._iter = 0
+        self.register_buffer("_iter", torch.zeros([1]))
         self._warmup_iters = 10000
 
         # weak and strong augmentation setting
@@ -155,7 +155,6 @@ class SetCriterion(nn.Module):
                                     'min_thresh': cfg.MODEL.CONSISTENCY.MINING.MIN_THRESH,
                                     'max_thresh': cfg.MODEL.CONSISTENCY.MINING.MAX_THRESH}
                                 }
-        self.max_iters = cfg.SOLVER.MAX_ITER 
 
     def loss_labels(self, outputs, targets, indices, num_masks, **kwargs):
         """Classification loss (NLL)
@@ -305,35 +304,28 @@ class SetCriterion(nn.Module):
         if len(gt_inds) == 0:
             dummy_loss = src_masks.sum() * 0.
             return dummy_loss
-        gt_bitmasks = torch.cat([per_im.gt_bitmasks for per_im in new_gt_instances])
-        gt_bitmasks = gt_bitmasks[gt_inds].unsqueeze(dim=1)
-
-        masks = (mask_scores.unsqueeze(1) > 0.7) * gt_bitmasks.float()
-
-        if self._iter >= 0:
+        if self._iter > 0:
             n_pos = torch.sum(masks, dim=(2,3))
-            pseudo_scores = (mask_scores.unsqueeze(1) * gt_bitmasks).reshape(len(gt_inds), -1) 
+            proto_seg = torch.amax(proto_masks, dim=1).unsqueeze(1).sigmoid()
+            pseudo_seg = 0.5 * proto_seg + 0.5 * mask_scores_mean
+            pseudo_scores = (pseudo_seg * gt_bitmasks).reshape(len(gt_inds), -1) 
             pseudo_scores_rank = torch.sort(pseudo_scores, descending=True)[0]
             n_pos = torch.clamp(n_pos, min=0, max=pseudo_scores_rank.shape[1]-1).long()
             
             assert n_pos.max() < pseudo_scores_rank.shape[1]
             thr = torch.gather(pseudo_scores_rank, dim=1, index=n_pos)
-            thr = torch.clamp(thr, min=0.7, max=0.8)[:,None,None]
-            pseudo_seg_final = (mask_scores.unsqueeze(1) > thr) * gt_bitmasks.float()
+            thr = scatter_mean(thr.squeeze(1), gt_inds)[gt_inds][:,None,None,None]
+            thr = torch.clamp(thr, min=0.7, max=0.8)
+            pseudo_seg_final = ( pseudo_seg > thr) * gt_bitmasks.float()
 
-            warmup_factor_2 = min(self._iter / float(self.max_iters), 1)
-            weights = ((mask_scores.unsqueeze(1) > thr) | (mask_scores.unsqueeze(1) < 0.3)) * gt_bitmasks
-            loss_pseudo = (self.mask_focal_loss(mask_scores.unsqueeze(1), pseudo_seg_final.detach(), weights)) * warmup_factor_2
-        return loss_pseudo
-    
-    def mask_focal_loss(self, x, targets, weights=None, alpha: float = 0.25, gamma: float = 2):
-        ce_loss = F.binary_cross_entropy_with_logits(x, targets, weight=weights, reduction="none")
-        # p_t = x * targets + (1 - x) * (1 - targets)
-        # loss = ce_loss * ((1 - p_t) ** gamma)
-        # if alpha >= 0:
-        #     alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
-        #     loss = alpha_t * loss
-        return ce_loss.sum()/(weights.sum()+1)
+
+
+        gt_bitmasks = torch.cat([per_im.gt_bitmasks for per_im in new_gt_instances])
+        gt_bitmasks = gt_bitmasks[gt_inds].unsqueeze(dim=1)
+
+
+        losses = self.boxinst_loss(src_masks, gt_bitmasks, image_color_similarity)
+        return losses
 
     # def contrast_loss(self, weak_logits, strong_logits):
     #     """ the consistence loss ensures weak and strong data augmentation has the same outputs"""
@@ -413,7 +405,7 @@ class SetCriterion(nn.Module):
         strong_items = get_items_by_index(strong_ids)
         return weak_items, strong_items
 
-    def compute_losses(self, outputs, outputs_ema, targets, batched_inputs):
+    def compute_losses(self, outputs, targets, batched_inputs):
         """This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -440,24 +432,21 @@ class SetCriterion(nn.Module):
         losses = {}
         for loss in self.losses:
             losses.update(self.get_loss(loss, outputs, targets, indices, num_masks, gt_instances=gt_instances))
-        
-        losses['loss_pseudo'] = self.loss_pseudo(outputs, outputs_ema, indices, num_masks, gt_instances=gt_instances) 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
                 indices = self.matcher(aux_outputs, targets)
-                aux_outputs_ema = outputs_ema["aux_outputs"][i]
-                losses[f'loss_pseudo_{i}'] = self.loss_pseudo(aux_outputs, aux_outputs_ema, indices, num_masks, gt_instances=gt_instances)
                 for loss in self.losses:
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_masks, gt_instances=gt_instances)
                     l_dict = {k + f"_{i}": v for k, v in l_dict.items()}
                     losses.update(l_dict)
+        # losses['loss_pseudo'] = 
         return losses
 
     def forward(self, outputs, outputs_ema, targets, batched_inputs, input_shape):
         assert len(targets) % 2 == 0
         assert outputs['pred_logits'].shape[0] % 2 == 0
-        self._iter += 1
+
         # pop ``masks`` for weakly supervised learning and get mask by bboxes
         if self.boxinst_enabled:
             for target in targets:
@@ -469,7 +458,6 @@ class SetCriterion(nn.Module):
 
         losses = self.compute_losses(
                 outputs,
-                outputs_ema,
                 targets,
                 batched_inputs,
             )

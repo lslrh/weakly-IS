@@ -32,9 +32,7 @@ class MaskFormer(nn.Module):
             self,
             *,
             backbone: Backbone,
-            backbone_ema: Backbone,
             sem_seg_head: nn.Module,
-            sem_seg_head_ema: nn.Module,
             criterion: nn.Module,
             num_queries: int,
             object_mask_threshold: float,
@@ -51,7 +49,6 @@ class MaskFormer(nn.Module):
             test_topk_per_image: int,
             input_size: int,
             boxinst_enabled: bool,
-            ema_on: bool,
     ):
         """
         Args:
@@ -101,11 +98,6 @@ class MaskFormer(nn.Module):
         self.test_topk_per_image = test_topk_per_image
         self.input_size = input_size
         self.boxinst_enabled = boxinst_enabled
-        self.ema_on = ema_on
-
-        if self.ema_on:
-            self.backbone_ema = backbone_ema
-            self.sem_seg_head_ema = sem_seg_head_ema
 
         if not self.semantic_on:
             assert self.sem_seg_postprocess_before_inference
@@ -117,8 +109,6 @@ class MaskFormer(nn.Module):
         backbone = build_backbone(cfg)
         sem_seg_head = build_sem_seg_head(cfg, backbone.output_shape())
 
-        backbone_ema = build_backbone(cfg)
-        sem_seg_head_ema = build_sem_seg_head(cfg, backbone_ema.output_shape())
         # Loss parameters:
         deep_supervision = cfg.MODEL.MASK_FORMER.DEEP_SUPERVISION
         no_object_weight = cfg.MODEL.MASK_FORMER.NO_OBJECT_WEIGHT
@@ -133,7 +123,6 @@ class MaskFormer(nn.Module):
         pair_weight = cfg.MODEL.MASK_FORMER.PAIR_WEIGHT
         proj_avg_weight = cfg.MODEL.MASK_FORMER.PROJ_AVG_WEIGHT
         consistency_weight = cfg.MODEL.MASK_FORMER.CONSISTENCY_WEIGHT
-        pseudo_weight = cfg.MODEL.MASK_FORMER.PSEUDO_WEIGHT
 
         # building criterion
         matcher = HungarianMatcher(
@@ -155,7 +144,6 @@ class MaskFormer(nn.Module):
             "loss_prj_avg"    : proj_avg_weight,
             "loss_pairwise"   : pair_weight,
             "loss_consistency": consistency_weight,
-            "loss_pseudo"     : pseudo_weight,
         }
 
         if deep_supervision:
@@ -185,9 +173,7 @@ class MaskFormer(nn.Module):
 
         return {
             "backbone"                            : backbone,
-            "backbone_ema"                        : backbone_ema,
             "sem_seg_head"                        : sem_seg_head,
-            "sem_seg_head_ema"                    : sem_seg_head_ema,
             "criterion"                           : criterion,
             "num_queries"                         : cfg.MODEL.MASK_FORMER.NUM_OBJECT_QUERIES,
             "object_mask_threshold"               : cfg.MODEL.MASK_FORMER.TEST.OBJECT_MASK_THRESHOLD,
@@ -208,7 +194,6 @@ class MaskFormer(nn.Module):
             "test_topk_per_image"                 : cfg.TEST.DETECTIONS_PER_IMAGE,
             "input_size"                          : cfg.INPUT.IMAGE_SIZE,
             "boxinst_enabled"                     : cfg.MODEL.BOXINST.ENABLED,
-            "ema_on"                              : cfg.MODEL.BOXINST.EMA_ON,
         }
 
     @property
@@ -252,9 +237,6 @@ class MaskFormer(nn.Module):
         features = self.backbone(images.tensor)
         outputs = self.sem_seg_head(features)
 
-        features_ema = self.backbone_ema(images.tensor)
-        outputs_ema = self.sem_seg_head_ema(features_ema)
-
         if self.training:
             if "instances" in batched_inputs[0]:
                 gt_instances = [x["instances"].to(self.device) for x in batched_inputs]
@@ -263,7 +245,7 @@ class MaskFormer(nn.Module):
                 targets = None
 
             # bipartite matching-based loss
-            losses = self.criterion(outputs, outputs_ema, targets, batched_inputs, images.tensor.shape)
+            losses = self.criterion(outputs, targets, batched_inputs, images.tensor.shape)
 
             for k in list(losses.keys()):
                 if k in self.criterion.weight_dict:

@@ -321,19 +321,19 @@ class SetCriterion(nn.Module):
             thr = torch.clamp(thr, min=0.7, max=0.8)[:,None,None]
             pseudo_seg_final = (mask_scores.unsqueeze(1) > thr) * gt_bitmasks.float()
 
-            warmup_factor_2 = min(self._iter / float(self.max_iters), 1)
-            weights = ((mask_scores.unsqueeze(1) > thr) | (mask_scores.unsqueeze(1) < 0.3)) * gt_bitmasks
-            loss_pseudo = (self.mask_focal_loss(mask_scores.unsqueeze(1), pseudo_seg_final.detach(), weights)) * warmup_factor_2
+            warmup_factor_2 = min(self._iter / float(self.max_iter), 1)
+            weights = ((mask_scores > thr) | (mask_scores < 0.3)) * gt_bitmasks
+            loss_pseudo = (self.mask_focal_loss(mask_scores, pseudo_seg_final.detach(), weights)) * warmup_factor_2 * 0.3
         return loss_pseudo
     
-    def mask_focal_loss(self, x, targets, weights=None, alpha: float = 0.25, gamma: float = 2):
+    def mask_focal_loss(x, targets, weights=None, alpha: float = 0.25, gamma: float = 2):
         ce_loss = F.binary_cross_entropy_with_logits(x, targets, weight=weights, reduction="none")
-        # p_t = x * targets + (1 - x) * (1 - targets)
-        # loss = ce_loss * ((1 - p_t) ** gamma)
-        # if alpha >= 0:
-        #     alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
-        #     loss = alpha_t * loss
-        return ce_loss.sum()/(weights.sum()+1)
+        p_t = x * targets + (1 - x) * (1 - targets)
+        loss = ce_loss * ((1 - p_t) ** gamma)
+        if alpha >= 0:
+            alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+            loss = alpha_t * loss
+        return loss.sum()/(weights.sum()+1)
 
     # def contrast_loss(self, weak_logits, strong_logits):
     #     """ the consistence loss ensures weak and strong data augmentation has the same outputs"""
@@ -446,18 +446,17 @@ class SetCriterion(nn.Module):
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
                 indices = self.matcher(aux_outputs, targets)
-                aux_outputs_ema = outputs_ema["aux_outputs"][i]
-                losses[f'loss_pseudo_{i}'] = self.loss_pseudo(aux_outputs, aux_outputs_ema, indices, num_masks, gt_instances=gt_instances)
                 for loss in self.losses:
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_masks, gt_instances=gt_instances)
                     l_dict = {k + f"_{i}": v for k, v in l_dict.items()}
                     losses.update(l_dict)
+        # losses['loss_pseudo'] = 
         return losses
 
     def forward(self, outputs, outputs_ema, targets, batched_inputs, input_shape):
         assert len(targets) % 2 == 0
         assert outputs['pred_logits'].shape[0] % 2 == 0
-        self._iter += 1
+
         # pop ``masks`` for weakly supervised learning and get mask by bboxes
         if self.boxinst_enabled:
             for target in targets:

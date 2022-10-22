@@ -42,7 +42,6 @@ def add_maskformer2_config(cfg):
     cfg.MODEL.MASK_FORMER.PROJ_AVG_WEIGHT = 1.0          # weakly supervised loss weight
     cfg.MODEL.MASK_FORMER.PAIR_WEIGHT = 1.0              # weakly supervised loss weight
     cfg.MODEL.MASK_FORMER.CONSISTENCY_WEIGHT = 1.0       # weakly supervised loss weight
-    cfg.MODEL.MASK_FORMER.PSEUDO_WEIGHT = 1.0 
 
     # transformer config
     cfg.MODEL.MASK_FORMER.NHEADS = 8

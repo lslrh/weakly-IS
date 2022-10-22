@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from kornia import color
 from detectron2.structures import ImageList
 from ..utils import viz
-import pdb
+
 
 def compute_project_term(mask_scores, gt_bitmasks, mode='max'):
     if mode == 'max':

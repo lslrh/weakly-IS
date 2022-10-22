@@ -446,8 +446,7 @@ class SetCriterion(nn.Module):
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
                 indices = self.matcher(aux_outputs, targets)
-                aux_outputs_ema = outputs_ema["aux_outputs"][i]
-                losses[f'loss_pseudo_{i}'] = self.loss_pseudo(aux_outputs, aux_outputs_ema, indices, num_masks, gt_instances=gt_instances)
+                losses
                 for loss in self.losses:
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_masks, gt_instances=gt_instances)
                     l_dict = {k + f"_{i}": v for k, v in l_dict.items()}

@@ -34,7 +34,7 @@ class MaskFormer(nn.Module):
             backbone: Backbone,
             backbone_ema: Backbone,
             sem_seg_head: nn.Module,
-            sem_seg_head_ema: nn.Module,
+            sem_seg_head: nn.Module,
             criterion: nn.Module,
             num_queries: int,
             object_mask_threshold: float,
@@ -133,7 +133,6 @@ class MaskFormer(nn.Module):
         pair_weight = cfg.MODEL.MASK_FORMER.PAIR_WEIGHT
         proj_avg_weight = cfg.MODEL.MASK_FORMER.PROJ_AVG_WEIGHT
         consistency_weight = cfg.MODEL.MASK_FORMER.CONSISTENCY_WEIGHT
-        pseudo_weight = cfg.MODEL.MASK_FORMER.PSEUDO_WEIGHT
 
         # building criterion
         matcher = HungarianMatcher(
@@ -155,7 +154,6 @@ class MaskFormer(nn.Module):
             "loss_prj_avg"    : proj_avg_weight,
             "loss_pairwise"   : pair_weight,
             "loss_consistency": consistency_weight,
-            "loss_pseudo"     : pseudo_weight,
         }
 
         if deep_supervision:
@@ -253,7 +251,7 @@ class MaskFormer(nn.Module):
         outputs = self.sem_seg_head(features)
 
         features_ema = self.backbone_ema(images.tensor)
-        outputs_ema = self.sem_seg_head_ema(features_ema)
+        outputs_ema = self.sem_seg_head_
 
         if self.training:
             if "instances" in batched_inputs[0]:
@@ -263,7 +261,7 @@ class MaskFormer(nn.Module):
                 targets = None
 
             # bipartite matching-based loss
-            losses = self.criterion(outputs, outputs_ema, targets, batched_inputs, images.tensor.shape)
+            losses = self.criterion(outputs, targets, batched_inputs, images.tensor.shape)
 
             for k in list(losses.keys()):
                 if k in self.criterion.weight_dict:

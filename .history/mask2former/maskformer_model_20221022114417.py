@@ -133,7 +133,6 @@ class MaskFormer(nn.Module):
         pair_weight = cfg.MODEL.MASK_FORMER.PAIR_WEIGHT
         proj_avg_weight = cfg.MODEL.MASK_FORMER.PROJ_AVG_WEIGHT
         consistency_weight = cfg.MODEL.MASK_FORMER.CONSISTENCY_WEIGHT
-        pseudo_weight = cfg.MODEL.MASK_FORMER.PSEUDO_WEIGHT
 
         # building criterion
         matcher = HungarianMatcher(
@@ -155,7 +154,6 @@ class MaskFormer(nn.Module):
             "loss_prj_avg"    : proj_avg_weight,
             "loss_pairwise"   : pair_weight,
             "loss_consistency": consistency_weight,
-            "loss_pseudo"     : pseudo_weight,
         }
 
         if deep_supervision:
